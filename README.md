@@ -1,4 +1,4 @@
-#GTKVPViewer
+## GTKVPViewer
 Freespace 1 and 2 .vp File Archive viewer/extractor.
 
 Compile with gtkmm-3.0 and g++, uses std libraries.
