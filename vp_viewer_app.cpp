@@ -253,7 +253,7 @@ private:
 	        auto ext_pos = entry.name.find_last_of('.');
 	        std::string ext = (ext_pos != std::string::npos) ? entry.name.substr(ext_pos + 1) : "";
 	
-	        if (ext == "txt" || ext == "tbl" || ext == "fs2") {
+	        if (ext == "txt" || ext == "tbl" || ext == "fs2" || ext == "fc2") {
 	            std::string content(buffer.begin(), buffer.end());
 	            m_text_view.get_buffer()->set_text(content);
         	    m_stack.set_visible_child(m_text_scroll);
