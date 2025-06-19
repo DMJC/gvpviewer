@@ -1,7 +1,10 @@
-// g++ main.cpp -std=c++17 `pkg-config --cflags --libs gtkmm-3.0` -o vp_viewer
 #include <gtkmm.h>
 #include <fstream>
 #include <iostream>
+#include <gst/gst.h>
+#include <gst/app/gstappsrc.h>
+#include <gst/gstclock.h>
+#include <iomanip>
 #include <map>
 #include <vector>
 #include <stack>
@@ -23,7 +26,7 @@ public:
     bool load(const std::string& filename) {
         std::ifstream file(filename, std::ios::binary);
         if (!file) return false;
-
+	this->filename = filename;
         char header[4];
         file.read(header, 4);
         if (std::strncmp(header, "VPVP", 4) != 0) return false;
@@ -71,7 +74,7 @@ public:
         this->file = std::move(file);
         return true;
     }
-
+    std::string filename;
     std::vector<VPEntry> entries;
     std::ifstream file;
 };
@@ -129,9 +132,131 @@ public:
 
 	m_stack.add(m_text_scroll, "text");
 	m_stack.add(m_drawing_area, "image");
+	m_stack.add(m_grid, "wave");
 	m_paned.pack2(m_stack);
         show_all_children();
     }
+protected:
+    void on_play_clicked(const VPEntry& entry) {
+        if (!load_audio_data(entry))
+            return;
+
+	//Check if currently playing and then clear the pipeline
+	GstState current_state;
+	gst_element_get_state(m_pipeline, &current_state, nullptr, GST_CLOCK_TIME_NONE);
+
+	if (current_state == GST_STATE_PLAYING) {
+	    // Clear pipeline
+	    gst_element_set_state(m_pipeline, GST_STATE_NULL);
+	    gst_object_unref(m_pipeline);
+	    m_pipeline = nullptr;
+	}
+
+        // Create GStreamer elements
+        m_pipeline = gst_pipeline_new("vp-pipeline");
+        GstElement* appsrc = gst_element_factory_make("appsrc", "source");
+        GstElement* decodebin = gst_element_factory_make("decodebin", "decode");
+        GstElement* convert = gst_element_factory_make("audioconvert", "convert");
+        GstElement* sink = gst_element_factory_make("autoaudiosink", "sink");
+
+        if (!m_pipeline || !appsrc || !decodebin || !convert || !sink) {
+            std::cerr << "Failed to create one or more GStreamer elements." << std::endl;
+            return;
+        }
+
+        // Assemble pipeline
+        gst_bin_add_many(GST_BIN(m_pipeline), appsrc, decodebin, convert, sink, nullptr);
+        gst_element_link(appsrc, decodebin);
+        g_signal_connect(decodebin, "pad-added", G_CALLBACK(on_pad_added), convert);
+        gst_element_link(convert, sink);
+
+        // Configure appsrc
+        GstAppSrc* appsrc_cast = GST_APP_SRC(appsrc);
+        gst_app_src_set_stream_type(appsrc_cast, GST_APP_STREAM_TYPE_STREAM);
+        gst_app_src_set_size(appsrc_cast, m_audio_data.size());
+
+        // WAV type
+        GstCaps* caps = gst_caps_new_simple("audio/x-wav", nullptr);
+        gst_app_src_set_caps(appsrc_cast, caps);
+        gst_caps_unref(caps);
+
+        // Push the buffer
+        GstBuffer* buffer = gst_buffer_new_allocate(nullptr, m_audio_data.size(), nullptr);
+        gst_buffer_fill(buffer, 0, m_audio_data.data(), m_audio_data.size());
+        gst_app_src_push_buffer(appsrc_cast, buffer);
+        gst_app_src_end_of_stream(appsrc_cast);
+
+        // Start playback
+        gst_element_set_state(m_pipeline, GST_STATE_PLAYING);
+    }
+
+    void on_pause_clicked() {
+        gst_element_set_state(m_playbin, GST_STATE_PAUSED);
+    }
+
+    void on_stop_clicked() {
+        gst_element_set_state(m_playbin, GST_STATE_READY);
+    }
+
+    void on_restart_clicked() {
+        gst_element_set_state(m_playbin, GST_STATE_READY);
+        gst_element_set_state(m_playbin, GST_STATE_PLAYING);
+    }
+
+    bool load_audio_data(VPEntry entry) {
+        std::ifstream file(m_parser.filename, std::ios::binary);
+            std::cerr << "File: " << entry.name << std::endl;
+            std::cerr << "File: " << entry.offset << std::endl;
+            std::cerr << "File: " << entry.size << std::endl;
+
+        if (!file) {
+            std::cerr << "Failed to open: " << entry.name << std::endl;
+            return false;
+        }
+
+        file.seekg(0, std::ios::end);
+        size_t total_size = file.tellg();
+        if (entry.offset + entry.size > total_size) {
+            std::cerr << "Invalid VPEntry offset/size (out of bounds)." << std::endl;
+            return false;
+        }
+
+        file.seekg(entry.offset);
+        m_audio_data.resize(entry.size);
+        file.read(reinterpret_cast<char*>(m_audio_data.data()), entry.size);
+
+        return true;
+    }
+
+    bool on_timeout() {
+        if (!GST_IS_ELEMENT(m_playbin))
+            return true;
+
+        gint64 pos = 0;
+        gint64 dur = 0;
+
+        if (gst_element_query_position(m_playbin, GST_FORMAT_TIME, &pos) &&
+            gst_element_query_duration(m_playbin, GST_FORMAT_TIME, &dur)) {
+            double current_sec = (double)pos / GST_SECOND;
+            double total_sec = (double)dur / GST_SECOND;
+
+            m_adjustment->set_upper(total_sec);
+            m_adjustment->set_value(current_sec);
+        }
+
+        return true; // keep timer
+    }
+
+    static void on_pad_added(GstElement* src, GstPad* pad, gpointer data) {
+        GstElement* convert = static_cast<GstElement*>(data);
+        GstPad* sinkpad = gst_element_get_static_pad(convert, "sink");
+        if (gst_pad_link(pad, sinkpad) != GST_PAD_LINK_OK)
+            std::cerr << "Failed to link decodebin to audioconvert" << std::endl;
+        gst_object_unref(sinkpad);
+    }
+//    VPEntry m_entry;
+    GstElement* m_pipeline = nullptr;
+    std::vector<uint8_t> m_audio_data;
 
 private:
     class ModelColumns : public Gtk::TreeModel::ColumnRecord {
@@ -150,6 +275,13 @@ private:
     Gtk::ScrolledWindow m_treeview_scroll;
     Gtk::TextView m_text_view;
     Gtk::DrawingArea m_drawing_area;
+    Gtk::Grid m_grid;
+    Gtk::Label m_label;
+    Gtk::Scrollbar m_scrollbar;
+    Gtk::Button m_button_play, m_button_pause, m_button_stop, m_button_restart;
+    GstElement* m_playbin = nullptr;
+    bool m_uri_set = false;
+    Glib::RefPtr<Gtk::Adjustment> m_adjustment;
     Glib::RefPtr<Gtk::TreeStore> m_treestore;
     VPParser m_parser;
 
@@ -263,6 +395,48 @@ private:
 	            std::cerr << "PCX viewing not implemented yet.\n";
 	            m_text_view.get_buffer()->set_text("[PCX Image Viewer Not Yet Implemented]");
 	            m_stack.set_visible_child(m_text_scroll);
+	        } else if (ext == "wav") {
+	            gst_init(nullptr, nullptr);
+	            m_playbin = gst_element_factory_make("playbin", "player");
+	            if (!m_playbin) {
+	                std::cerr << "Failed to create playbin element." << std::endl;
+	                std::exit(1);
+	            }
+            	    // Label (spans all 4 columns)
+	            m_label.set_text("Filename:");
+	     	    m_label.set_text(entry.name);
+	            m_grid.attach(m_label, 0, 0, 4, 1); // column, row, width, height
+
+	            // Horizontal scrollbar (also 4 columns wide)
+	            m_scrollbar.set_orientation(Gtk::ORIENTATION_HORIZONTAL);
+	            m_adjustment = Gtk::Adjustment::create(0, 0, 100, 1, 10);
+	            m_scrollbar.set_adjustment(m_adjustment);
+        	    m_grid.attach(m_scrollbar, 0, 1, 4, 1);
+
+
+		    m_button_play.signal_clicked().connect([this, &entry] {
+			on_play_clicked(entry);
+		    });
+//	            m_button_play.signal_clicked().connect(sigc::mem_fun(*this, &VPViewerWindow::on_play_clicked));
+	            m_button_pause.signal_clicked().connect(sigc::mem_fun(*this, &VPViewerWindow::on_pause_clicked));
+	            m_button_stop.signal_clicked().connect(sigc::mem_fun(*this, &VPViewerWindow::on_stop_clicked));
+	            m_button_restart.signal_clicked().connect(sigc::mem_fun(*this, &VPViewerWindow::on_restart_clicked));
+	            Glib::signal_timeout().connect(sigc::mem_fun(*this, &VPViewerWindow::on_timeout), 100); 
+	            // Buttons
+	            m_grid.attach(m_button_play, 0, 2, 1, 1);
+	            m_button_play.set_label("Play");
+
+	            m_grid.attach(m_button_pause, 1, 2, 1, 1);
+	            m_button_pause.set_label("Pause");
+
+	            m_grid.attach(m_button_stop, 2, 2, 1, 1);
+	            m_button_stop.set_label("Stop");
+
+	            m_grid.attach(m_button_restart, 3, 2, 1, 1);
+        	    m_button_restart.set_label("Restart");
+		    m_grid.show_all_children();
+
+	            m_stack.set_visible_child(m_grid);
 	        } else {
 	            // Try to load as image (e.g., supported format)
 	            try {
