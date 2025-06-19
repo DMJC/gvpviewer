@@ -291,6 +291,10 @@ private:
         dialog.add_button("Cancel", Gtk::RESPONSE_CANCEL);
         dialog.add_button("Open", Gtk::RESPONSE_OK);
 
+	auto filter_vp = Gtk::FileFilter::create();
+        filter_vp->set_name("VP files");
+        filter_vp->add_pattern("*vp");
+        dialog.add_filter(filter_vp);
         if (dialog.run() == Gtk::RESPONSE_OK) {
             if (m_parser.load(dialog.get_filename())) {
                 m_treestore->clear();
@@ -385,7 +389,7 @@ private:
 	        auto ext_pos = entry.name.find_last_of('.');
 	        std::string ext = (ext_pos != std::string::npos) ? entry.name.substr(ext_pos + 1) : "";
 	
-	        if (ext == "txt" || ext == "tbl" || ext == "fs2" || ext == "fc2") {
+	        if (ext == "txt" || ext == "hcf" || ext == "tbl" || ext == "fs2" || ext == "fc2") {
 	            std::string content(buffer.begin(), buffer.end());
 	            m_text_view.get_buffer()->set_text(content);
         	    m_stack.set_visible_child(m_text_scroll);
