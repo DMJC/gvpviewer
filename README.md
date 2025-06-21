@@ -6,4 +6,4 @@ Compile with gtkmm-3.0, gstreamer-1.0, gstreamer-app-1.0 and g++, uses std libra
 Progress
 - Supports .tbl, .hcf, .fs2, .fc2, .txt files.
 - Supports .wav Audio including playback.
-- Implementing image formats,tga (tested/verified), png, dds, jpeg, pcx (untested).
+- Implementing image formats, tga, pcx (tested/verified), png, dds, jpeg, untested.
