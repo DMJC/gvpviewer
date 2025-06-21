@@ -11,6 +11,7 @@
 #include <cstring>
 #include <sstream>
 #include <filesystem>
+#include "pcx_decoder.h"
 
 struct VPEntry {
     int offset;
@@ -122,19 +123,29 @@ public:
         m_treeview.set_model(m_treestore);
         m_treeview.append_column("Filename", m_columns.m_col_name);
         m_treeview.get_selection()->signal_changed().connect(sigc::mem_fun(*this, &VPViewerWindow::on_tree_selection_changed));
-	m_treeview_scroll.add(m_treeview);
-	m_treeview_scroll.set_policy(Gtk::POLICY_AUTOMATIC, Gtk::POLICY_AUTOMATIC);
+		m_treeview_scroll.add(m_treeview);
+		m_treeview_scroll.set_policy(Gtk::POLICY_AUTOMATIC, Gtk::POLICY_AUTOMATIC);
+
+		m_drawing_area.signal_draw().connect(sigc::mem_fun(*this, &VPViewerWindow::on_draw_pcx));
 
         m_paned.pack1(m_treeview_scroll);
-	m_text_view.set_editable(false);
-	m_text_scroll.add(m_text_view);
-	m_text_scroll.set_policy(Gtk::POLICY_AUTOMATIC, Gtk::POLICY_AUTOMATIC);
+		m_text_view.set_editable(false);
+		m_text_scroll.add(m_text_view);
+		m_text_scroll.set_policy(Gtk::POLICY_AUTOMATIC, Gtk::POLICY_AUTOMATIC);
 
-	m_stack.add(m_text_scroll, "text");
-	m_stack.add(m_drawing_area, "image");
-	m_stack.add(m_grid, "wave");
-	m_paned.pack2(m_stack);
+		m_stack.add(m_text_scroll, "text");
+		m_stack.add(m_drawing_area, "image");
+		m_stack.add(m_grid, "wave");
+		m_paned.pack2(m_stack);
         show_all_children();
+    }
+
+    bool on_draw_pcx(const Cairo::RefPtr<Cairo::Context>& cr) {
+        if (m_current_pixbuf) {
+            Gdk::Cairo::set_source_pixbuf(cr, m_current_pixbuf, 0, 0);
+            cr->paint();
+        }
+        return true;
     }
 protected:
     void on_play_clicked(const VPEntry& entry) {
@@ -191,16 +202,16 @@ protected:
     }
 
     void on_pause_clicked() {
-        gst_element_set_state(m_playbin, GST_STATE_PAUSED);
+        gst_element_set_state(m_pipeline, GST_STATE_PAUSED);
     }
 
     void on_stop_clicked() {
-        gst_element_set_state(m_playbin, GST_STATE_READY);
+        gst_element_set_state(m_pipeline, GST_STATE_READY);
     }
 
     void on_restart_clicked() {
-        gst_element_set_state(m_playbin, GST_STATE_READY);
-        gst_element_set_state(m_playbin, GST_STATE_PLAYING);
+        gst_element_set_state(m_pipeline, GST_STATE_READY);
+        gst_element_set_state(m_pipeline, GST_STATE_PLAYING);
     }
 
     bool load_audio_data(VPEntry entry) {
@@ -235,8 +246,8 @@ protected:
         gint64 pos = 0;
         gint64 dur = 0;
 
-        if (gst_element_query_position(m_playbin, GST_FORMAT_TIME, &pos) &&
-            gst_element_query_duration(m_playbin, GST_FORMAT_TIME, &dur)) {
+        if (gst_element_query_position(m_pipeline, GST_FORMAT_TIME, &pos) &&
+            gst_element_query_duration(m_pipeline, GST_FORMAT_TIME, &dur)) {
             double current_sec = (double)pos / GST_SECOND;
             double total_sec = (double)dur / GST_SECOND;
 
@@ -280,11 +291,12 @@ private:
     Gtk::Scrollbar m_scrollbar;
     Gtk::Button m_button_play, m_button_pause, m_button_stop, m_button_restart;
     GstElement* m_playbin = nullptr;
+	PCXImage pcx;
     bool m_uri_set = false;
     Glib::RefPtr<Gtk::Adjustment> m_adjustment;
     Glib::RefPtr<Gtk::TreeStore> m_treestore;
+    Glib::RefPtr<Gdk::Pixbuf> m_current_pixbuf;
     VPParser m_parser;
-
 
     void on_open_file() {
         Gtk::FileChooserDialog dialog(*this, "Open .vp File", Gtk::FILE_CHOOSER_ACTION_OPEN);
@@ -374,7 +386,6 @@ private:
         }
     }
 
-
 	void on_tree_selection_changed() {
 	    auto iter = m_treeview.get_selection()->get_selected();
 	    if (!iter) return;
@@ -394,11 +405,22 @@ private:
 	            m_text_view.get_buffer()->set_text(content);
         	    m_stack.set_visible_child(m_text_scroll);
 	        } else if (ext == "pcx") {
-	            // PCX decoding not natively supported by Gdk::PixbufLoader.
-	            // Placeholder: real implementation should decode to RGB buffer.
-	            std::cerr << "PCX viewing not implemented yet.\n";
-	            m_text_view.get_buffer()->set_text("[PCX Image Viewer Not Yet Implemented]");
-	            m_stack.set_visible_child(m_text_scroll);
+				std::vector<uint8_t> byte_buffer(buffer.begin(), buffer.end());
+				pcx = load_pcx_from_memory(byte_buffer);
+				m_current_pixbuf = Gdk::Pixbuf::create_from_data(
+				    pcx.rgba_data.data(),
+				    Gdk::COLORSPACE_RGB,
+				    true,
+				    8,
+				    pcx.width,
+				    pcx.height,
+				    pcx.width * 4
+				);
+				// Optional: resize drawing area if needed
+				m_drawing_area.set_size_request(pcx.width, pcx.height);
+				// Switch stack child and trigger redraw
+				m_stack.set_visible_child(m_drawing_area);
+				m_drawing_area.queue_draw();
 	        } else if (ext == "wav") {
 	            gst_init(nullptr, nullptr);
 	            m_playbin = gst_element_factory_make("playbin", "player");
@@ -438,8 +460,7 @@ private:
 
 	            m_grid.attach(m_button_restart, 3, 2, 1, 1);
         	    m_button_restart.set_label("Restart");
-		    m_grid.show_all_children();
-
+		    	m_grid.show_all_children();
 	            m_stack.set_visible_child(m_grid);
 	        } else {
 	            // Try to load as image (e.g., supported format)
