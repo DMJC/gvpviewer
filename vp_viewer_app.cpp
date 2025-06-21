@@ -4,6 +4,7 @@
 #include <gst/gst.h>
 #include <gst/app/gstappsrc.h>
 #include <gst/gstclock.h>
+#include <glibmm/fileutils.h>
 #include <iomanip>
 #include <map>
 #include <vector>
@@ -11,7 +12,9 @@
 #include <cstring>
 #include <sstream>
 #include <filesystem>
+#include "ani_decoder.h"
 #include "pcx_decoder.h"
+#include "pof_decoder.h"
 
 struct VPEntry {
     int offset;
@@ -127,6 +130,7 @@ public:
 		m_treeview_scroll.set_policy(Gtk::POLICY_AUTOMATIC, Gtk::POLICY_AUTOMATIC);
 
 		m_drawing_area.signal_draw().connect(sigc::mem_fun(*this, &VPViewerWindow::on_draw_pcx));
+		m_drawing_area.signal_draw().connect(sigc::mem_fun(*this, &VPViewerWindow::on_draw_ani));
 
         m_paned.pack1(m_treeview_scroll);
 		m_text_view.set_editable(false);
@@ -135,6 +139,7 @@ public:
 
 		m_stack.add(m_text_scroll, "text");
 		m_stack.add(m_drawing_area, "image");
+//		m_stack.add(m_ani_widget, "animation");
 		m_stack.add(m_grid, "wave");
 		m_paned.pack2(m_stack);
         show_all_children();
@@ -147,6 +152,13 @@ public:
         }
         return true;
     }
+
+	bool on_draw_ani(const Cairo::RefPtr<Cairo::Context>& cr) {
+	    if (m_current_pixbuf)
+	        Gdk::Cairo::set_source_pixbuf(cr, m_current_pixbuf, 0, 0), cr->paint();
+	    return true;
+	}
+
 protected:
     void on_play_clicked(const VPEntry& entry) {
         if (!load_audio_data(entry))
@@ -291,8 +303,11 @@ private:
     Gtk::Scrollbar m_scrollbar;
     Gtk::Button m_button_play, m_button_pause, m_button_stop, m_button_restart;
     GstElement* m_playbin = nullptr;
-	PCXImage pcx;
+//    ANIMovie ani;
+    PCXImage pcx;
     bool m_uri_set = false;
+    Glib::ustring filename_only;
+    std::string title;
     Glib::RefPtr<Gtk::Adjustment> m_adjustment;
     Glib::RefPtr<Gtk::TreeStore> m_treestore;
     Glib::RefPtr<Gdk::Pixbuf> m_current_pixbuf;
@@ -336,6 +351,11 @@ private:
                     }
                 }
             }
+        std::string full_path = dialog.get_filename();
+        // Extract just the filename from the full path
+	filename_only = Glib::filename_display_basename(full_path);
+	title = "VP Viewer - " + filename_only;
+        set_title(title);
         }
     }
 
@@ -400,11 +420,18 @@ private:
 	        auto ext_pos = entry.name.find_last_of('.');
 	        std::string ext = (ext_pos != std::string::npos) ? entry.name.substr(ext_pos + 1) : "";
 	
-	        if (ext == "txt" || ext == "hcf" || ext == "tbl" || ext == "fs2" || ext == "fc2") {
+	        if (ext == "ani" || ext == "ANI") {
+				std::vector<uint8_t> byte_buffer(buffer.begin(), buffer.end());
+/*				ani.load_ani_from_memory(byte_buffer);
+				m_current_pixbuf = .play();
+				m_stack.set_visible_child(m_ani_widget);
+				m_ani_widget.queue_draw();*/
+	                std::cerr << "Ani not implemented yet." << std::endl;
+			} else if (ext == "txt" || ext == "hcf" || ext == "tbl" || ext == "fs2" || ext == "fc2" || ext == "TXT" || ext == "HCF" || ext == "TBL" || ext == "FS2" || ext == "FC2") {
 	            std::string content(buffer.begin(), buffer.end());
 	            m_text_view.get_buffer()->set_text(content);
         	    m_stack.set_visible_child(m_text_scroll);
-	        } else if (ext == "pcx") {
+	        } else if (ext == "pcx" || ext == "PCX") {
 				std::vector<uint8_t> byte_buffer(buffer.begin(), buffer.end());
 				pcx = load_pcx_from_memory(byte_buffer);
 				m_current_pixbuf = Gdk::Pixbuf::create_from_data(
@@ -416,11 +443,10 @@ private:
 				    pcx.height,
 				    pcx.width * 4
 				);
-				// Optional: resize drawing area if needed
-				m_drawing_area.set_size_request(pcx.width, pcx.height);
-				// Switch stack child and trigger redraw
 				m_stack.set_visible_child(m_drawing_area);
 				m_drawing_area.queue_draw();
+	        } else if (ext == "pof" || ext == "POF") {
+	                std::cerr << "POF 3D model viewer not implemented yet." << std::endl;
 	        } else if (ext == "wav") {
 	            gst_init(nullptr, nullptr);
 	            m_playbin = gst_element_factory_make("playbin", "player");
